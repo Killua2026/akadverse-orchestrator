@@ -1,0 +1,23 @@
+Environments
+
+.env
+venv/
+env/
+pycache/
+*.pyc
+
+Database and Persistence
+
+*.db
+faiss_platform_index/
+.ipynb_checkpoints/
+
+User Data & Logs
+
+*.log
+interaction_logs/
+
+IDE
+
+.vscode/
+.idea/
