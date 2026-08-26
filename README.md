@@ -1,255 +1,275 @@
-# AkadVerse: Virtual Assistant Orchestrator
+# AkadVerse Orchestrator
 
-**Tier 1 Agentic AI | Microservice Port: `8000`**
+Tier 1 orchestration service for AkadVerse on port 8000.
 
-The central intelligence hub of AkadVerse, orchestrating specialized Student, Faculty, and Study VAs with persistent memory and platform-grounded reasoning.
+This README reflects the current implementation in this folder.
 
-## Table of Contents
-- [What This Microservice Does](#what-this-microservice-does)
-- [Architecture Overview](#architecture-overview)
-- [Prerequisites](#prerequisites)
-- [Getting Your API Key](#getting-your-api-key)
-- [Installation](#installation)
-- [Running the Server](#running-the-server)
-- [Visual Demo Console](#visual-demo-console)
-- [API Endpoints](#api-endpoints)
-- [Testing with Swagger UI](#testing-with-swagger-ui)
-- [Example Test Inputs](#example-test-inputs)
-- [Understanding the Responses](#understanding-the-responses)
-- [Generated Files](#generated-files)
-- [Common Errors and Fixes](#common-errors-and-fixes)
-- [Project Structure](#project-structure)
+## What Is Running Today
 
-## What This Microservice Does
+The orchestrator is a FastAPI service that:
 
-This service is a Tier 1 component of the AkadVerse AI-first e-learning platform. It lives in the Platform Core module and serves as the primary entry point for all user-AI interactions.
+- Accepts chat messages via `POST /chat`
+- Routes conversation turns through Gemini (with model fallback)
+- Lets Gemini call configured HTTP tools from `config.yaml`
+- Returns a unified response payload with optional action metadata
+- Stores session history in memory with a bounded window
+- Stores STEM context in memory
 
-The Orchestrator manages three distinct personas:
+Current state summary:
 
-*   **Student Virtual Assistant (SVA):** Focuses on navigation, grade tracking, and personal scheduling.
-*   **Faculty Virtual Assistant (FVA):** Manages announcements, student performance audits, and office hours.
-*   **Study Virtual Assistant (StVA):** An academic engine for quizzes, explanations, and study planning.
+- Session storage: in-memory (`InMemorySessionManager`)
+- STEM context storage: in-memory (`InMemoryStemClient`)
+- Long-term persistence: not wired yet in this service
+- Tool wiring: config-driven via `config.yaml`
 
-**Core Workflow:**
+## High-Level Flow
 
-1.  **Identity Scoping:** Incoming requests are tagged with a non-spoofable `user_id` and `tenant_id` for secure database operations.
-2.  **Cognitive Routing:** The agent determines if it can answer from its RAG knowledge base, execute a tool (like checking grades), or perform a live web search.
-3.  **Memory Integration:** Conversation history is persisted in Redis for short-term flow, while long-term preferences are stored in MongoDB.
+1. Request arrives at `POST /chat`.
+2. Session history is loaded from in-memory store.
+3. STEM context is loaded and converted into system instruction context.
+4. Router sends the conversation to Gemini.
+5. If Gemini issues function calls, orchestrator invokes matching tools over HTTP.
+6. Final reply is composed and returned.
+7. User and assistant messages are appended to in-memory session history.
 
-**Key Design Decisions:**
+## API Contract
 
-*   **FAISS Disk Persistence:** The platform knowledge base index is saved locally to avoid re-embedding costs on restarts.
-*   **Deterministic Routing:** Live news queries bypass the LLM and use RSS/Serper fallbacks to save API quota.
-*   **Identity Hardening:** Requests use metadata-sourced user IDs to prevent prompt-injection attacks.
+### POST /chat
 
-## Architecture Overview
-User Request
-    |
-    v
-[API Layer] (FastAPI)
-    |
-    v
-[Identity Guard] (Request-scoped User Context)
-    |
-    v
-[Agent Router] (LangGraph / Gemini 1.5 Flash) <---- [Memory] (Redis/MongoDB)
-    |            |            |
-    v            v            v
-[Tool Registry] [RAG Store] [Web Search]
-(40+ Actions)   (FAISS)      (Google Search Tool)
-```
-
-| Component      | Technology             | Purpose                      |
-| :------------- | :--------------------- | :--------------------------- |
-| Orchestrator   | LangGraph + LangChain  | Agentic reasoning and tool-use |
-| Primary LLM    | Gemini 1.5 Flash       | Core cognitive engine        |
-| Web Search     | Google Search Grounding| Live external information    |
-| Memory         | Redis + MongoDB        | Short-term vs long-term storage |
-| Knowledge Base | FAISS                  | Semantic search for platform features |
-
-## Prerequisites
-
-*   Python 3.12 or higher
-*   Redis (for session memory)
-*   MongoDB (for long-term profiles)
-*   Google Gemini API Key
-*   Windows Users: OpenMP Fix is included in code (`KMP_DUPLICATE_LIB_OK`)
-
-## Getting Your API Key
-
-1.  Go to [https://aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-2.  Sign in with your Google account.
-3.  Click Create API Key.
-4.  Create a `.env` file in your root directory and add: `GOOGLE_API_KEY=your_key_here`
-
-## Installation
-
-**Step 1 -- Set up your project folder**
-
-```bash
-mkdir akadverse-orchestrator
-cd akadverse-orchestrator
-```
-
-**Step 2 -- Create and activate a virtual environment**
-
-```bash
-python -m venv venv
-# Windows:
-venv\Scripts\activate
-# Linux/macOS:
-source venv/bin/activate
-```
-
-**Step 3 -- Install dependencies**
-
-```bash
-pip install -r requirements.txt
-```
-
-| Package | Purpose |
-|---|---|
-| fastapi | Async langchain-google-genai | Gemini integration |
-| langgraph | Agentic state management |
-| redis | Short-term memory client |
-| pymongo | Long-term memory client |
-| faiss-cpu | Vector storage |
-
-## Running the Server
-
-```bash
-uvicorn agent:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Expected Terminal Output:
-
-```
-[Startup] AkadVerse Orchestrator initialising...
-✅ Using Gemini API (gemini-1.5-flash) via LangChain
-short-term memory active)
-✅ MongoDB connected (long-term memory active)
-✅ FAISS index loaded from local disk
-INFO:     Uvicorn running on http://127.0.0.1:8000
-```
-
-## Visual Demo Console
-
-To see the Orchestrator in action with a polished user interface, you can use the built-in demo console.
-
-1.  Ensure the Python server is running on port 8000.
-2.  Host the `akadverse_demo.html` file using a simple local server (to avoid CORS issues).
-
-    ```bash
-    python -m http.server 3000
-    ```
-
-3.  Open your browser and navigate to:
-    [http://127.0.0.1:3000/akadverse_demo.html](http://127.0.0.1:3000/akadverse_demo.html)
-
-**What to test in the Demo:**
-
-*   **Agent Switching:** Use the SVA, FVA, and StVA buttons to switch personas.
-*   **Quick Prompts:** Click the suggested prompts to see the agent fetch grades or navigate the platform.
-*   **Microservice Health:** The sidebar will show real-time connectivity status for other Tier 5 tools.
-
-## API Endpoints
-
-### 1. `POST /chat`
-
-**What it does:** Primary interface for all Virtual Assistant interactions.
-
-**Request Body:**
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `user_id` | Yes | - | Unique student/staff identifier |
-| `message` | Yes | - | The user's query |
-| `agent_type` | No | SVA | SVA, FVA, or StVA |
-
-**Success Response (200 OK):**
+Request body:
 
 ```json
 {
+  "session_id": "S-123",
+  "message": "Generate a quiz on photosynthesis",
   "user_id": "23CE034397",
-  "response": "Hello! I've checked your schedule and you have no classes today.",
-  "rag_active": true
+  "agent_hint": "StVA"
 }
 ```
 
-### 2. `GET /health`
+Notes:
 
-**What it does:** Returns status of all sub-systems (LLM, Redis, Mongo, RAG).
+- Required fields: `session_id`, `message`
+- Optional fields: `user_id`, `agent_hint`
+- `agent_hint` is accepted but routing is currently driven by model/tool logic
 
-## Testing with Swagger UI
+Success response:
 
-With the server running, open:
-[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+```json
+{
+  "reply": "Here is your quiz.",
+  "tool_used": "quiz_generator",
+  "action": null
+}
+```
 
-## Example Test Inputs
+Download-style response example:
 
-**Test 1 -- Platform Knowledge (RAG)**
+```json
+{
+  "reply": "Your slide deck is ready. Click the download button below.",
+  "tool_used": "slide_generator",
+  "action": {
+    "type": "download",
+    "url": "http://127.0.0.1:8009/slides/download/presentation.pptx",
+    "label": "Download Slide Generator"
+  }
+}
+```
 
-Query: "How does the attendance system work?"
-Expected: Agent uses `search_platform_knowledge` and explains the 75% threshold.
+Failure behavior:
 
-**Test 2 -- Tool Use (Navigation)**
+- If Gemini is not configured, response is graceful with a setup hint.
+- If Gemini model calls fail, router tries fallback models.
+- If all model attempts fail, a user-safe fallback message is returned.
+- If tool invocation fails, failure is handled gracefully and returned to the model loop.
 
-Query: "Take me to the marketplace."
-Expected: JSON response contains `action: navigate` and `destination: /marketplace`.
+### GET /health
 
-**Test 3 -- Agent Relay**
+Response shape:
 
-Query: "Ask my lecturer if I can meet him."
-Expected: SVA uses `check_faculty_availability` to relay a message to the FVA.
+```json
+{
+  "status": "healthy",
+  "selected_model": "gemini-2.5-flash",
+  "llm_ready": true,
+  "session_ready": true,
+  "stem_ready": true,
+  "tools_ready": true
+}
+```
 
-## Understanding the Responses
+`selected_model` is the model chosen at startup after dynamic discovery.
 
-*   **Why is there a delay on first query?**
-    The orchestrator initializes the FAISS index on startup. The first query after a cold start may take 2-3 seconds longer as connections to Redis and MongoDB are established.
+## Configuration
 
-*   **The `[KAFKA MOCK]` line**
-    You will see terminal logs indicating Kafka events. This simulates publishing to the AkadVerse Event Bus for the Insight Engine to track student engagement.
+Settings are loaded from environment variables plus `config.yaml`.
 
-## Generated Files
+### Environment Variables
 
-| File / Folder | What it is | Gitignore? |
-| :------------ | :--------- | :--------- |
-| `faiss_platform_index/` | Local vector store files | Yes |
-| `.env` | Sensitive API keys | Yes -- NEVER COMMIT |
-| `__pycache__/` | Python byte code | Yes |
+- `GOOGLE_API_KEY`: enables Gemini routing
+- `OPENAI_API_KEY`: reserved in settings but not used by current router path
+- `LLM_PROVIDER`: default `gemini`
+- `LLM_MODEL_NAME`: preferred Gemini model
+- `LLM_MODEL_FALLBACKS`: comma-separated fallback list
+- `AKADVERSE_ORCHESTRATOR_CONFIG`: path to YAML config file (default `config.yaml`)
+- `SESSION_LIMIT`: max messages retained per session (default `20`)
+- `CORS_ORIGINS`: comma-separated allowed origins (default `*`)
+- `STEM_BACKEND`: default `memory`
 
-## Common Errors and Fixes
+### YAML Config (`config.yaml`)
 
-*   **Error: 429 Resource Exhausted**
-    *   Cause: You have hit the Gemini Free Tier rate limit.
-    *   Fix: The agent has a built-in 15-minute backoff. Wait for the cooldown or upgrade to a paid tier.
+Defines:
 
-*   **Error: ConnectionRefusedError (Redis)**
-    *   Cause: Redis server is not running.
-    *   Fix: Ensure Redis is started (`redis-server`) or check the `REDIS_AVAILABLE` logs.
+- LLM defaults
+- Session defaults
+- STEM backend label
+- Tool definitions (name, schema, endpoint, timeout, retry policy, request format)
+
+## Tool Invocation Model
+
+Tools are registered from config and exposed to Gemini as function declarations.
+
+Invocation details:
+
+- Default request format: JSON
+- JSON payload:
+
+```json
+{
+  "session_id": "S-123",
+  "tool_name": "quiz_generator",
+  "params": {
+    "topic": "photosynthesis"
+  }
+}
+```
+
+- Form payload is supported per-tool (`request_format: form`), used by services like `slide_generator`.
+- Request headers include:
+  - `X-Akadverse-Session-Id`
+  - `X-Akadverse-Tool-Name`
+- Timeout and retries are per tool (`timeout_seconds`, `retry_count`).
+
+## Service Ports in Current Tool Config
+
+Configured endpoints currently map to these tool services:
+
+- 8003: YouTube Recommender
+- 8004: Marketplace API
+- 8005: Google Workspace Service
+- 8006: Resource Tracker
+- 8007: Schedule Manager
+- 8008: Notes Creator
+- 8009: Slide Generator
+- 8010: Concept Explainer
+- 8011: External Resources Puller
+- 8012: Assignment Generator
+- 8013: Sample Questions Generator
+- 8014: Note to Audio
+- 8015: Note to Animations
+- 8016: Quiz Generator
+- 8017: Practice Questions Generator
+- 8018: Attendance AI
+- 8019: Grade Upload AI
+
+## Installation
+
+From this folder:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Create `.env` in this folder (minimum):
+
+```env
+GOOGLE_API_KEY=your_key_here
+```
+
+## Running the Service
+
+Option 1 (direct uvicorn):
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Option 2 (wrapper script):
+
+```bash
+python orchestrator.py
+```
+
+Open API docs:
+
+- http://127.0.0.1:8000/docs
+
+Health check:
+
+- http://127.0.0.1:8000/health
+
+## Testing
+
+Run from this folder:
+
+```bash
+pytest -q
+```
+
+Core covered behavior in tests:
+
+- Health endpoint availability
+- Chat response contract
+- Tool-call and non-tool paths
+- Download action payload handling
+- Config loading and model discovery behavior
+- HTTP tool invoker payload format and error handling
+- Session cap behavior
+- STEM context storage behavior
 
 ## Project Structure
 
-```
+```text
 akadverse-orchestrator/
-|-- agent.py                 # Core Orchestrator logic
-|-- requirements.txt         # Dependencies
-|-- .env                     # API Keys (Local only)
-|-- .gitignore               # Exclusions
-|-- faiss_platform_index/    # Vector Store (Persistent)
-|-- akadverse_demo.html      # Frontend Demo Console
+|-- app/
+|   |-- main.py
+|   |-- router.py
+|   |-- tools.py
+|   |-- config.py
+|   |-- session.py
+|   |-- stem.py
+|   |-- composer.py
+|   |-- models.py
+|-- tests/
+|-- config.yaml
+|-- orchestrator.py
+|-- requirements.txt
+|-- README.md
 ```
 
-## Part of the AkadVerse Platform
+## Important Implementation Notes
 
-This microservice is Tier 1 in the AkadVerse AI architecture, operating within the Platform Core alongside:
+- The previous Redis/Mongo-backed memory model is not currently active in this code path.
+- Session and STEM state are process-local and reset on restart.
+- Tool availability depends on downstream microservices being reachable.
+- Router loop is capped to prevent infinite tool-call cycles.
+- Download actions are surfaced when tool responses contain `download_url` or `file_url`.
 
-*   Attendance AI (Port 8001)
-*   Grade Upload AI (Port 8002)
-*   Notes Creator (Port 8003)
+## Troubleshooting
 
-The `agent.message.relayed` Kafka event published by this service is consumed by the specialized assistants in production.
+- `Gemini is not configured...`
+  - Set `GOOGLE_API_KEY` in `.env` and restart.
 
----
+- Model unavailable or quota exhausted
+  - Router automatically tries fallback models.
+  - If all fail, user-safe fallback text is returned.
 
-AkadVerse AI Architecture -- v1.0
+- Tool unavailable
+  - Check downstream service status and endpoint in `config.yaml`.
+  - Verify payload schema expected by that service.
+
+- Empty or unexpected replies
+  - Check orchestrator logs for router/tool events and model errors.

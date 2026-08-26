@@ -1,23 +1,43 @@
-Environments
-
+# Environments
 .env
+.env.*
+!.env.example
+.venv/
 venv/
 env/
-pycache/
-*.pyc
+ENV/
 
-Database and Persistence
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
 
+# Database and persistence
 *.db
 faiss_platform_index/
+
+# Jupyter
 .ipynb_checkpoints/
 
-User Data & Logs
-
+# Logs and runtime artifacts
 *.log
 interaction_logs/
 
-IDE
+# OS files
+.DS_Store
+Thumbs.db
 
+# IDE
 .vscode/
 .idea/
