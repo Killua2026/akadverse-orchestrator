@@ -34,7 +34,16 @@ class Router:
         self._settings = settings
         self._registry = registry
         self._invoker = invoker
-        self._client = genai.Client(api_key=settings.google_api_key) if settings.google_api_key else None
+        if settings.llm_provider == "gemini_enterprise" and settings.google_cloud_project:
+            self._client = genai.Client(
+                enterprise=True,
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+            )
+        elif settings.google_api_key:
+            self._client = genai.Client(api_key=settings.google_api_key)
+        else:
+            self._client = None
 
     def _hash_preview(self, value: str) -> str:
         return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
@@ -144,14 +153,20 @@ class Router:
             "Please try again in a moment."
         )
 
-    def _system_instruction(self, system_prompt: str) -> str:
+    def _system_instruction(self, system_prompt: str, agent_hint: str | None = None) -> str:
         tool_names = ", ".join(tool.name for tool in self._registry.list_tools()) or "no registered tools"
-        return (
+        instruction = (
             f"{system_prompt.strip()}\n\n"
             f"Available tools: {tool_names}.\n"
             "Only call a tool when the user clearly needs it. "
             "If the message is a greeting or ordinary conversation, answer directly."
         )
+        if agent_hint:
+            instruction += (
+                f"\n\nThe frontend selected the {agent_hint} tool. "
+                f"Use {agent_hint} for this request unless the user clearly asks for a different task."
+            )
+        return instruction
 
     def _build_function_declarations(self) -> list[types.FunctionDeclaration]:
         declarations: list[types.FunctionDeclaration] = []
@@ -378,6 +393,51 @@ class Router:
             "label": self._action_label(result.tool_name),
         }
 
+    def _quiz_result_reply(self, result: ToolResult) -> str | None:
+        """Render a completed quiz without requiring a second model turn."""
+        if result.tool_name != "quiz_generator" or not result.success:
+            return None
+
+        try:
+            parsed = json.loads(result.content)
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        topic = parsed.get("topic")
+        difficulty = parsed.get("difficulty")
+        questions = parsed.get("questions")
+        if not isinstance(topic, str) or not isinstance(difficulty, str) or not isinstance(questions, list):
+            return None
+
+        lines = [f"Quiz: {topic}", f"Difficulty: {difficulty}", ""]
+        for index, question in enumerate(questions, start=1):
+            if not isinstance(question, dict):
+                continue
+
+            question_text = question.get("question_text")
+            if not isinstance(question_text, str) or not question_text.strip():
+                continue
+
+            lines.append(f"{index}. {question_text}")
+            options = question.get("options")
+            if isinstance(options, list):
+                lines.extend(f"   {option}" for option in options if isinstance(option, str))
+
+            correct_answer = question.get("correct_answer")
+            explanation = question.get("explanation")
+            if isinstance(correct_answer, str):
+                lines.append(f"Answer: {correct_answer}")
+            if isinstance(explanation, str):
+                lines.append(f"Explanation: {explanation}")
+            lines.append("")
+
+        if len(lines) <= 3:
+            return None
+        return "\n".join(lines).strip()
+
     def _download_ready_reply(self, tool_name: str) -> str:
         if tool_name == "slide_generator":
             return "Your slide deck is ready. Click the download button below."
@@ -411,8 +471,16 @@ class Router:
         system_prompt: str,
         session_id: str,
         request_id: str | None = None,
+        agent_hint: str | None = None,
     ) -> RouteResult:
         if self._client is None:
+            if self._settings.llm_provider == "gemini_enterprise":
+                return RouteResult(
+                    reply=(
+                        "Gemini Enterprise is not configured. Set GOOGLE_CLOUD_PROJECT and "
+                        "GOOGLE_CLOUD_LOCATION, or set GOOGLE_API_KEY for temporary Developer API fallback."
+                    )
+                )
             return RouteResult(reply="Gemini is not configured. Set GOOGLE_API_KEY to enable the router.")
 
         gemini_contents: list[types.Content] = [
@@ -435,7 +503,7 @@ class Router:
             quota_exhausted = False
 
             for model_name in self._model_candidates():
-                system_instruction = self._system_instruction(system_prompt)
+                system_instruction = self._system_instruction(system_prompt, agent_hint=agent_hint)
                 attempt_started = time.perf_counter()
                 self._log_event(
                     logging.INFO,
@@ -451,7 +519,7 @@ class Router:
                 )
                 try:
                     config_kwargs: dict[str, Any] = {
-                        "systemInstruction": system_instruction,
+                        "system_instruction": system_instruction,
                         "temperature": 0.3,
                     }
                     if tool_config is not None:
@@ -591,6 +659,13 @@ class Router:
                         tool_used=first_tool_used or tool_call.name,
                         action=action,
                     )
+                quiz_reply = self._quiz_result_reply(tool_result)
+                if quiz_reply is not None:
+                    return RouteResult(
+                        reply=quiz_reply,
+                        tool_used=first_tool_used or tool_call.name,
+                        action=None,
+                    )
                 tool_response_parts.append(
                     types.Part(
                         function_response=types.FunctionResponse(
@@ -618,6 +693,7 @@ class Router:
         system_prompt: str,
         session_id: str,
         request_id: str | None = None,
+        agent_hint: str | None = None,
     ) -> RouteResult:
         """Compatibility wrapper for older call sites."""
 
@@ -626,4 +702,5 @@ class Router:
             system_prompt=system_prompt,
             session_id=session_id,
             request_id=request_id,
+            agent_hint=agent_hint,
         )

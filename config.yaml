@@ -1,10 +1,10 @@
 llm:
-  provider: gemini
-  model_name: gemini-2.0-flash-lite
+  provider: gemini_enterprise
+  model_name: gemini-2.5-flash
   model_fallbacks:
-    - gemini-2.5-flash
-    - gemini-2.0-flash
-    - gemini-2.0-flash-lite
+    - gemini-2.5-flash-lite
+    - gemini-3.1-flash-lite
+    - gemini-3.5-flash
 
 stem:
   backend: memory
@@ -14,21 +14,22 @@ session:
 
 tools:
   - name: quiz_generator
-    description: Generate quizzes from a topic and optional difficulty settings.
+    description: Generate a quiz from a topic, difficulty, and question count.
     parameters:
       type: object
       properties:
         topic:
           type: string
-        num_questions:
-          type: integer
-          minimum: 1
         difficulty:
           type: string
           enum: [easy, medium, hard]
-      required: [topic, num_questions]
+        question_count:
+          type: integer
+          minimum: 1
+          maximum: 20
+      required: [topic, difficulty, question_count]
       additionalProperties: false
-    endpoint: http://localhost:8016/generate-quiz
+    endpoint: http://localhost:8016/chat/contextual
     timeout_seconds: 90
     retry_count: 2
 

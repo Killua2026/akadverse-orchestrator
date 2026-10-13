@@ -78,7 +78,10 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="healthy",
         selected_model=settings.model_name,
-        llm_ready=settings.google_api_key is not None,
+        llm_ready=(
+            (settings.llm_provider == "gemini_enterprise" and settings.google_cloud_project is not None)
+            or settings.google_api_key is not None
+        ),
         session_ready=session_manager is not None,
         stem_ready=stem_client is not None,
         tools_ready=True,
@@ -89,13 +92,21 @@ async def health() -> HealthResponse:
 async def chat(request: ChatRequest) -> dict[str, Any]:
     request_id = uuid.uuid4().hex
     started = time.perf_counter()
+    valid_agent_hint = None
+    if request.agent_hint:
+        try:
+            tool_registry.get(request.agent_hint)
+            valid_agent_hint = request.agent_hint
+        except KeyError:
+            logger.warning("Ignoring unknown agent hint: %s", request.agent_hint)
+
     _log_event(
         logging.INFO,
         "chat.request.start",
         request_id=request_id,
         session_id=request.session_id,
         user_id_present=bool(request.user_id),
-        agent_hint_present=bool(request.agent_hint),
+        agent_hint_present=bool(valid_agent_hint),
         message_len=len(request.message),
         message_sha256_12=_hash_preview(request.message),
     )
@@ -139,11 +150,17 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
     )
 
     try:
+        route_kwargs: dict[str, Any] = {
+            "messages": conversation,
+            "system_prompt": system_prompt,
+            "session_id": request.session_id,
+            "request_id": request_id,
+        }
+        if valid_agent_hint:
+            route_kwargs["agent_hint"] = valid_agent_hint
+
         outcome: RouteResult = await router.route(
-            messages=conversation,
-            system_prompt=system_prompt,
-            session_id=request.session_id,
-            request_id=request_id,
+            **route_kwargs,
         )
         response_payload = composer.compose(outcome)
     except Exception:

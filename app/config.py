@@ -24,6 +24,24 @@ DEFAULT_MODEL_FALLBACKS = [
     "gemini-2.0-flash-lite",
 ]
 
+ENTERPRISE_MODEL_PRIORITY = [
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+]
+
+MEDIA_ONLY_MODEL_MARKERS = (
+    "audio",
+    "image",
+    "imagen",
+    "lyria",
+    "music",
+    "veo",
+    "video",
+)
+
 
 def get_valid_model_name(
     api_key: str,
@@ -39,7 +57,7 @@ def get_valid_model_name(
 
     try:
         client = genai.Client(api_key=api_key)
-        available_models = [m.name.replace("models/", "") for m in client.models.list() if getattr(m, "name", None)]
+        available_models = [model_id for model in client.models.list() if (model_id := _model_id(model))]
 
         priority: list[str] = []
         for candidate in [preferred_model, *fallback_priority]:
@@ -54,6 +72,65 @@ def get_valid_model_name(
     except Exception:
         logger.exception("Model discovery failed")
         return default_model
+
+
+def _model_id(model: Any) -> str:
+    name = str(getattr(model, "name", "") or "").strip()
+    if not name:
+        return ""
+    return name.removeprefix("models/").rstrip("/").split("/")[-1]
+
+
+def _supports_chat_generation(model: Any, model_id: str) -> bool:
+    """Accept only models usable by the router's text/function-call loop."""
+
+    normalized_id = model_id.lower().replace("_", "-")
+    if any(marker in normalized_id for marker in MEDIA_ONLY_MODEL_MARKERS):
+        return False
+
+    supported_actions = getattr(model, "supported_actions", None)
+    if supported_actions is None and isinstance(model, dict):
+        supported_actions = model.get("supported_actions") or model.get("supportedActions")
+
+    if supported_actions is None:
+        return True
+
+    actions = {str(action).replace("_", "").lower() for action in supported_actions}
+    return "generatecontent" in actions
+
+
+def discover_enterprise_model_names(
+    project: str,
+    location: str,
+    preferred_model: str | None = None,
+    fallback_models: list[str] | None = None,
+) -> list[str]:
+    """Discover and rank Gemini model IDs available through Enterprise."""
+
+    configured_priority: list[str] = []
+    for candidate in [preferred_model, *(fallback_models or []), *ENTERPRISE_MODEL_PRIORITY]:
+        if candidate and candidate not in configured_priority:
+            configured_priority.append(candidate)
+
+    if not project or not location:
+        return configured_priority
+
+    try:
+        client = genai.Client(enterprise=True, project=project, location=location)
+        discovered = {
+            model_id
+            for model in client.models.list()
+            if (model_id := _model_id(model))
+            and "gemini" in model_id.lower()
+            and "flash" in model_id.lower()
+            and _supports_chat_generation(model, model_id)
+        }
+        ranked = [candidate for candidate in configured_priority if candidate in discovered]
+        ranked.extend(sorted(discovered - set(ranked)))
+        return ranked or configured_priority
+    except Exception:
+        logger.exception("Enterprise model discovery failed")
+        return configured_priority
 
 
 def _split_csv(value: str | None, default: list[str]) -> list[str]:
@@ -71,6 +148,8 @@ class OrchestratorSettings:
     model_name: str = "gemini-2.5-flash"
     model_fallbacks: list[str] = field(default_factory=lambda: list(DEFAULT_MODEL_FALLBACKS))
     google_api_key: str | None = None
+    google_cloud_project: str | None = None
+    google_cloud_location: str = "us-central1"
     openai_api_key: str | None = None
     tools_config_path: Path = Path("config.yaml")
     session_limit: int = 20
@@ -127,7 +206,9 @@ def _build_tool_definitions(raw_tools: Any) -> list[ToolDefinition]:
                     description=str(raw_tool.get("description", "")),
                     parameters=dict(parameters),
                     endpoint=raw_tool.get("endpoint"),
-                    request_format=str(raw_tool.get("request_format", "json")),
+                    request_format=(
+                        "form" if str(raw_tool.get("request_format", "json")).lower() == "form" else "json"
+                    ),
                     timeout_seconds=float(raw_tool.get("timeout_seconds", raw_tool.get("timeout", 30.0))),
                     retry_count=int(raw_tool.get("retry_count", raw_tool.get("retry", 0))),
                 )
@@ -171,6 +252,11 @@ def load_settings(config_path: str | Path | None = None) -> OrchestratorSettings
     if not model_fallbacks:
         model_fallbacks = list(DEFAULT_MODEL_FALLBACKS)
     google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", str(llm_section.get("project", ""))).strip() or None
+    google_cloud_location = os.getenv(
+        "GOOGLE_CLOUD_LOCATION",
+        str(llm_section.get("location", "us-central1")),
+    ).strip() or "us-central1"
     openai_api_key = os.getenv("OPENAI_API_KEY")
     try:
         session_limit = int(os.getenv("SESSION_LIMIT", str(session_section.get("max_messages", 20))))
@@ -181,13 +267,25 @@ def load_settings(config_path: str | Path | None = None) -> OrchestratorSettings
     cors_origins = _split_csv(os.getenv("CORS_ORIGINS"), raw_config.get("cors_origins", ["*"]))
     stem_backend = os.getenv("STEM_BACKEND", str(stem_section.get("backend", "memory")))
     tools = _build_tool_definitions(raw_config.get("tools", []))
-    model_name = get_valid_model_name(google_api_key or "", configured_model, model_fallbacks)
+    if llm_provider == "gemini_enterprise":
+        discovered_models = discover_enterprise_model_names(
+            project=google_cloud_project or "",
+            location=google_cloud_location,
+            preferred_model=configured_model,
+            fallback_models=model_fallbacks,
+        )
+        model_name = discovered_models[0] if discovered_models else configured_model
+        model_fallbacks = discovered_models or model_fallbacks
+    else:
+        model_name = get_valid_model_name(google_api_key or "", configured_model, model_fallbacks)
 
     return OrchestratorSettings(
         llm_provider=llm_provider,
         model_name=model_name,
         model_fallbacks=model_fallbacks,
         google_api_key=google_api_key,
+        google_cloud_project=google_cloud_project,
+        google_cloud_location=google_cloud_location,
         openai_api_key=openai_api_key,
         tools_config_path=resolved_config_path,
         session_limit=session_limit,

@@ -9,7 +9,7 @@ This README reflects the current implementation in this folder.
 The orchestrator is a FastAPI service that:
 
 - Accepts chat messages via `POST /chat`
-- Routes conversation turns through Gemini (with model fallback)
+- Routes conversation turns through Gemini Enterprise/Vertex AI, with temporary Developer API fallback
 - Lets Gemini call configured HTTP tools from `config.yaml`
 - Returns a unified response payload with optional action metadata
 - Stores session history in memory with a bounded window
@@ -107,9 +107,13 @@ Settings are loaded from environment variables plus `config.yaml`.
 
 ### Environment Variables
 
-- `GOOGLE_API_KEY`: enables Gemini routing
+- `GOOGLE_GENAI_USE_ENTERPRISE`: optional SDK flag for Enterprise mode
+- `GOOGLE_CLOUD_PROJECT`: Google Cloud project used by Vertex AI
+- `GOOGLE_CLOUD_LOCATION`: Vertex AI region, default `us-central1`
+- `GOOGLE_APPLICATION_CREDENTIALS`: path to the local service-account credential file; never commit this file
+- `GOOGLE_API_KEY`: temporary fallback for the Gemini Developer API
 - `OPENAI_API_KEY`: reserved in settings but not used by current router path
-- `LLM_PROVIDER`: default `gemini`
+- `LLM_PROVIDER`: `gemini_enterprise` for Vertex AI, or `gemini` for Developer API fallback
 - `LLM_MODEL_NAME`: preferred Gemini model
 - `LLM_MODEL_FALLBACKS`: comma-separated fallback list
 - `AKADVERSE_ORCHESTRATOR_CONFIG`: path to YAML config file (default `config.yaml`)
@@ -121,7 +125,7 @@ Settings are loaded from environment variables plus `config.yaml`.
 
 Defines:
 
-- LLM defaults
+- LLM provider, preferred model, and fallback preferences
 - Session defaults
 - STEM backend label
 - Tool definitions (name, schema, endpoint, timeout, retry policy, request format)
@@ -183,11 +187,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Create `.env` in this folder (minimum):
+Create `.env` in this folder for Enterprise mode:
 
 ```env
-GOOGLE_API_KEY=your_key_here
+LLM_PROVIDER=gemini_enterprise
+GOOGLE_GENAI_USE_ENTERPRISE=true
+GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=C:\secure-path\vertex-service-account.json
 ```
+
+For temporary Developer API fallback, set `GOOGLE_API_KEY` and either remove the Enterprise project settings or set `LLM_PROVIDER=gemini`.
+
+When Enterprise mode is enabled, the orchestrator discovers available Gemini model IDs at startup through the Enterprise `google-genai` client, ranks them using the configured priority, and caches the resulting model chain in process memory. It does not inspect credentials or query discovery on every request.
 
 ## Running the Service
 

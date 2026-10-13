@@ -154,6 +154,48 @@ def test_quiz_request_triggers_tool_and_returns_final_text() -> None:
     assert outcome.action is None
 
 
+def test_completed_quiz_is_returned_without_second_model_turn() -> None:
+    settings = OrchestratorSettings(model_name="gemini-2.5-flash", google_api_key="fake-key")
+    invoker = RecordingInvoker(
+        ToolResult(
+            tool_name="quiz_generator",
+            content=json.dumps(
+                {
+                    "topic": "Photosynthesis",
+                    "difficulty": "easy",
+                    "questions": [
+                        {
+                            "question_text": "What pigment captures light energy?",
+                            "options": ["Chlorophyll", "Hemoglobin"],
+                            "correct_answer": "Chlorophyll",
+                            "explanation": "Chlorophyll absorbs light energy for photosynthesis.",
+                        }
+                    ],
+                }
+            ),
+            success=True,
+        )
+    )
+    router = Router(settings=settings, registry=_registry(), invoker=invoker)
+    fake_client = _attach_fake_client(
+        router,
+        FakeClient([_tool_call_response("quiz_generator", {"topic": "Photosynthesis"})]),
+    )
+
+    outcome = asyncio.run(
+        router.route(
+            messages=[Message(role="user", content="Generate an easy quiz on photosynthesis")],
+            system_prompt="You are AkadVerse assistant.",
+            session_id="S4",
+        )
+    )
+
+    assert len(fake_client.models.calls) == 1
+    assert outcome.tool_used == "quiz_generator"
+    assert "Quiz: Photosynthesis" in outcome.reply
+    assert "Chlorophyll" in outcome.reply
+
+
 def test_tool_failure_is_converted_to_graceful_model_fallback() -> None:
     settings = OrchestratorSettings(model_name="gemini-2.5-flash", google_api_key="fake-key")
     router = Router(settings=settings, registry=_registry(), invoker=FailingInvoker())

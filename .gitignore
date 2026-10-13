@@ -7,6 +7,10 @@ venv/
 env/
 ENV/
 
+# CRITICAL SECURITY: Google Vertex AI(Gemini Enterprise Agent Platform) Credentials
+# Never push this file to any repository
+project-53449f5e-2561-4ef2-8c1-15f7cb62d3cf.json
+
 # Python cache and build artifacts
 __pycache__/
 *.py[cod]
